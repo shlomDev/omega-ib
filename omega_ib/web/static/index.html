@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>OMEGA-IB</title>
+<script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  :root {
+    --bg: #0a0d10;
+    --panel: #10151a;
+    --border: #1e2830;
+    --text: #d7e2e8;
+    --dim: #6b7c88;
+    --green: #3ddc84;
+    --red: #ff5c5c;
+    --amber: #ffb74d;
+    --accent: #4fd1ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "SF Mono", "JetBrains Mono", Consolas, monospace;
+    font-size: 13px;
+    padding-bottom: 24px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 10;
+  }
+  header .brand { font-weight: 700; letter-spacing: 0.08em; color: var(--accent); }
+  header .conn { font-size: 11px; color: var(--dim); }
+  header .conn.live { color: var(--green); }
+  #killbar {
+    display: none;
+    background: var(--red);
+    color: #180404;
+    text-align: center;
+    font-weight: 700;
+    padding: 6px;
+    letter-spacing: 0.05em;
+  }
+  main { padding: 12px; display: grid; gap: 12px; }
+  .grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
+  @media (min-width: 720px) { .grid.cols-2 { grid-template-columns: 1fr 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+  }
+  .panel h2 {
+    margin: 0 0 8px 0;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--dim);
+  }
+  .stat-row { display: flex; justify-content: space-between; padding: 3px 0; }
+  .stat-row .v { font-weight: 600; }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: var(--dim); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  td { padding: 4px 6px; border-bottom: 1px solid #151b20; }
+  .gauge { height: 6px; background: #1a2228; border-radius: 3px; overflow: hidden; margin-top: 4px; }
+  .gauge-fill { height: 100%; background: var(--green); }
+  .gauge-fill.warn { background: var(--amber); }
+  .gauge-fill.breach { background: var(--red); }
+  #chart { height: 220px; }
+  button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: 4px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  button.danger { border-color: var(--red); color: var(--red); }
+  #audit-log { max-height: 240px; overflow-y: auto; font-size: 11px; }
+  #audit-log div { padding: 3px 0; border-bottom: 1px solid #151b20; color: var(--dim); }
+  #audit-log .reject { color: var(--red); }
+  #token-gate {
+    position: fixed; inset: 0; background: var(--bg); display: flex;
+    align-items: center; justify-content: center; z-index: 100;
+  }
+  #token-gate input {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 10px; border-radius: 4px; font-family: inherit; width: 240px;
+  }
+</style>
+</head>
+<body>
+
+<div id="token-gate">
+  <div class="panel" style="text-align:center">
+    <h2>OMEGA-IB access token</h2>
+    <input id="token-input" type="password" placeholder="bearer token" />
+    <div style="margin-top:10px"><button onclick="saveToken()">Connect</button></div>
+  </div>
+</div>
+
+<div id="killbar">KILL SWITCH ENGAGED — trading blocked until manually reset</div>
+
+<header>
+  <div class="brand">OMEGA-IB</div>
+  <div id="conn" class="conn">connecting…</div>
+</header>
+
+<main>
+  <div class="grid cols-2">
+    <div class="panel">
+      <h2>Account</h2>
+      <div class="stat-row"><span>NAV</span><span class="v" id="nav">--</span></div>
+      <div class="stat-row"><span>Day P&amp;L</span><span class="v" id="day-pnl">--</span></div>
+      <div class="stat-row"><span>Unrealized</span><span class="v" id="unrealized">--</span></div>
+      <div class="stat-row"><span>Realized</span><span class="v" id="realized">--</span></div>
+      <div class="stat-row"><span>Cash</span><span class="v" id="cash">--</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Risk limits</h2>
+      <div>Daily loss cap
+        <div class="gauge"><div class="gauge-fill" id="gauge-loss"></div></div>
+      </div>
+      <div style="margin-top:8px">Open positions
+        <div class="gauge"><div class="gauge-fill" id="gauge-positions"></div></div>
+      </div>
+      <div class="stat-row" style="margin-top:8px"><span>Mode</span><span class="v" id="mode">--</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Equity curve</h2>
+    <div id="chart"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Positions</h2>
+    <table>
+      <thead><tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Mkt price</th><th>P&amp;L</th></tr></thead>
+      <tbody id="positions-body"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Open orders</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Status</th><th>Filled</th><th>Remaining</th><th>Avg fill</th></tr></thead>
+      <tbody id="orders-body"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Audit feed</h2>
+    <div id="audit-log"></div>
+  </div>
+
+  <div class="panel" style="text-align:center">
+    <button class="danger" onclick="killSwitch()">/kill — cancel all &amp; halt</button>
+  </div>
+</main>
+
+<script>
+let TOKEN = localStorage.getItem("omega_token") || "";
+if (TOKEN) document.getElementById("token-gate").style.display = "none";
+
+function saveToken() {
+  TOKEN = document.getElementById("token-input").value.trim();
+  localStorage.setItem("omega_token", TOKEN);
+  document.getElementById("token-gate").style.display = "none";
+  boot();
+}
+
+function fmtMoney(n) {
+  if (n === undefined || n === null) return "--";
+  const cls = n < 0 ? "neg" : "pos";
+  return `<span class="${cls}">$${n.toLocaleString(undefined, {maximumFractionDigits: 2})}</span>`;
+}
+
+async function api(path) {
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  return res.json();
+}
+
+function renderAccount(a) {
+  document.getElementById("nav").textContent = a.nav ? `$${a.nav.toLocaleString()}` : "--";
+  document.getElementById("day-pnl").innerHTML = fmtMoney(a.day_pnl);
+  document.getElementById("unrealized").innerHTML = fmtMoney(a.unrealized_pnl);
+  document.getElementById("realized").innerHTML = fmtMoney(a.realized_pnl);
+  document.getElementById("cash").textContent = a.cash ? `$${a.cash.toLocaleString()}` : "--";
+}
+
+function renderPositions(rows) {
+  const body = document.getElementById("positions-body");
+  body.innerHTML = rows.map(p => `
+    <tr>
+      <td>${p.symbol}</td>
+      <td>${p.quantity}</td>
+      <td>${p.avg_cost.toFixed(2)}</td>
+      <td>${p.market_price.toFixed(2)}</td>
+      <td>${fmtMoney(p.unrealized_pnl)}</td>
+    </tr>`).join("") || `<tr><td colspan="5" style="color:var(--dim)">No open positions</td></tr>`;
+}
+
+function renderOrders(rows) {
+  const body = document.getElementById("orders-body");
+  body.innerHTML = rows.map(o => `
+    <tr><td>${o.order_id}</td><td>${o.status}</td><td>${o.filled}</td><td>${o.remaining}</td><td>${o.avg_fill_price}</td></tr>
+  `).join("") || `<tr><td colspan="5" style="color:var(--dim)">No open orders</td></tr>`;
+}
+
+function renderRisk(r) {
+  document.getElementById("mode").textContent = r.is_read_only ? `${r.trading_mode} (READ-ONLY)` : r.trading_mode;
+  const lossPct = Math.max(0, -r.day_pnl_pct) / r.max_daily_loss_pct_nav * 100;
+  const lossFill = document.getElementById("gauge-loss");
+  lossFill.style.width = Math.min(100, lossPct) + "%";
+  lossFill.className = "gauge-fill " + (lossPct >= 100 ? "breach" : lossPct >= 70 ? "warn" : "");
+
+  const posPct = r.open_positions / r.max_open_positions * 100;
+  const posFill = document.getElementById("gauge-positions");
+  posFill.style.width = Math.min(100, posPct) + "%";
+  posFill.className = "gauge-fill " + (posPct >= 100 ? "breach" : posPct >= 70 ? "warn" : "");
+
+  document.getElementById("killbar").style.display = r.kill_switch_active ? "block" : "none";
+}
+
+function renderAudit(rows) {
+  const log = document.getElementById("audit-log");
+  log.innerHTML = rows.map(r => `
+    <div class="${r.event_type.includes('rejection') ? 'reject' : ''}">
+      [${new Date(r.created_at).toLocaleTimeString()}] ${r.event_type}: ${r.reason}
+    </div>`).join("");
+}
+
+async function killSwitch() {
+  if (!confirm("Engage kill switch? This cancels all open orders and blocks new ones.")) return;
+  await fetch("/api/kill", { method: "POST", headers: { Authorization: `Bearer ${TOKEN}` } });
+}
+
+async function refreshOnce() {
+  try {
+    renderAccount(await api("/api/account"));
+    renderPositions(await api("/api/positions"));
+    renderOrders(await api("/api/orders/open"));
+    renderRisk(await api("/api/risk/limits"));
+    renderAudit(await api("/api/audit?limit=40"));
+    document.getElementById("conn").textContent = "connected";
+    document.getElementById("conn").className = "conn live";
+  } catch (e) {
+    document.getElementById("conn").textContent = "auth/connection error";
+    document.getElementById("conn").className = "conn";
+  }
+}
+
+let chart, series;
+function initChart() {
+  chart = LightweightCharts.createChart(document.getElementById("chart"), {
+    layout: { background: { color: "#10151a" }, textColor: "#6b7c88" },
+    grid: { vertLines: { color: "#1e2830" }, horzLines: { color: "#1e2830" } },
+    timeScale: { borderColor: "#1e2830" },
+    rightPriceScale: { borderColor: "#1e2830" },
+  });
+  series = chart.addAreaSeries({ lineColor: "#4fd1ff", topColor: "rgba(79,209,255,0.25)", bottomColor: "rgba(79,209,255,0)" });
+}
+
+function connectWs() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(TOKEN)}`);
+  ws.onmessage = (evt) => {
+    const data = JSON.parse(evt.data);
+    renderAccount(data.account);
+    renderPositions(data.positions);
+    document.getElementById("killbar").style.display = data.kill_switch_active ? "block" : "none";
+  };
+  ws.onclose = () => setTimeout(connectWs, 3000);
+}
+
+function boot() {
+  if (!TOKEN) return;
+  initChart();
+  refreshOnce();
+  connectWs();
+  setInterval(refreshOnce, 15000);
+}
+
+boot();
+</script>
+</body>
+</html>

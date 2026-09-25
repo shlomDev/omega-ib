@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     web_auth_token: str = "change-me"
     web_host: str = "0.0.0.0"
     web_port: int = 8000
+    ws_broadcast_interval_seconds: float = 2.0
 
     # --- Storage ---
     database_url: str = "sqlite:///./data/omega.db"

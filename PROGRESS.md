@@ -59,14 +59,46 @@
   - Tests: `tests/test_guard_enforcement.py` (grep enforcement), `tests/test_risk_guard.py`
     (every limit, kill switch engage/reset, live-mode gating, sizing helpers) — 50 passed.
 
+- Phase 4: portfolio/risk terminal (read-only) + WS + Telegram alerts
+  - `omega_ib/risk/portfolio.py`: `PositionRisk` (delta already in share terms so
+    stocks and options aggregate uniformly), `aggregate_greeks`, `beta_weighted_delta_vs_spy`
+    (SPY-equivalent dollar-delta), `sector_concentration`/`underlying_concentration`,
+    `historical_var` (percentile of a daily-return sample), `RiskLimitGauge` +
+    `daily_loss_gauge`/`open_positions_gauge` for UI distance-to-cap bars. Options
+    greeks are optional fields that stay zero until data/options.py exists (phase 6).
+  - `omega_ib/web/app.py`: FastAPI app (`create_app(broker, settings)` factory so
+    tests/dry-run inject `FakeBroker`), single bearer-token auth (`web_auth_token`)
+    on every `/api/*` route except `/api/health`. Endpoints: account, positions,
+    open orders, risk/limits (with distance-to-daily-loss-cap and kill-switch state),
+    audit feed, `POST /api/kill` / `POST /api/resume` (both go through `RiskGuard`,
+    same path as Telegram/CLI), `/ws` WebSocket streaming account+positions+kill-switch
+    snapshots every `ws_broadcast_interval_seconds`, and `/` serving the static UI.
+    Still strictly read-only re: order placement -- no route can call place_order.
+  - `omega_ib/web/static/index.html`: single-file dark-terminal UI (mobile-first) --
+    token gate (localStorage), account/risk panels with gauge bars, positions/orders
+    tables, audit feed, TradingView Lightweight Charts equity-curve placeholder, a
+    `/kill` button wired to `POST /api/kill`, and WS auto-reconnect. Manually smoke
+    tested by running a real uvicorn server and curling `/`, `/api/account`,
+    `/api/risk/limits` (see commit); full browser interaction untested (no GUI here).
+  - `omega_ib/notify/telegram.py`: `TelegramNotifier.send_alert` (no-ops with a log
+    line when unconfigured -- safe in CI) and `handle_command` implementing
+    `/status /pnl /positions /risk /kill /resume` (`/scan` `/opts` reply "not
+    available yet" until phases 5/6 land). `/kill` and `/resume` call `RiskGuard`
+    directly, same as the Web UI button.
+  - Added `ws_broadcast_interval_seconds` to config.py.
+  - Tests: `tests/test_portfolio_risk.py`, `tests/test_web_app.py` (FastAPI
+    TestClient incl. WS auth + streaming), `tests/test_telegram.py`. 82 passed, ruff clean.
+
 ## In progress
 - (none)
 
 ## Blocked
-- No IB Gateway reachable in this dev/CI sandbox (carried over from Phase 2). All guard
-  and sizing logic is broker-agnostic and fully tested against `FakeBroker`.
+- No IB Gateway reachable in this dev/CI sandbox (carried over from Phase 2). All guard,
+  portfolio, and web logic is broker-agnostic and fully tested against `FakeBroker`.
+- No browser/GUI available to visually test `web/static/index.html`; verified via a real
+  uvicorn server + curl smoke test instead (index HTML, account, risk/limits endpoints).
 
 ## Next
-- Phase 4: `web/app.py` (FastAPI REST + WS), `web/static/index.html` (dark terminal UI),
-  `risk/portfolio.py` (aggregate greeks/beta-weighted delta/sector concentration/VaR),
-  `notify/telegram.py` (alerts + /status /pnl /positions /risk /scan /opts /kill /resume).
+- Phase 5: `strategies/equity/*` (momentum breakout, gap-and-go, mean reversion, VWAP
+  reclaim, trend pullback), `data/market.py` (bars/snapshots/scanners/earnings calendar),
+  `execution/engine.py`, `lifecycle/eod.py` -- built and tested against `FakeBroker`.
