@@ -22,6 +22,8 @@ class Contract:
     right: str = ""  # OPT only: C/P
     con_id: int = 0
     legs: list[Contract] = field(default_factory=list)  # BAG only
+    leg_action: str = "BUY"  # meaningful only when this Contract is used as a BAG leg
+    leg_ratio: int = 1  # meaningful only when this Contract is used as a BAG leg
 
 
 @dataclass
