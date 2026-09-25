@@ -25,10 +25,16 @@ from omega_ib.broker.base import (
     OrderStatus,
     Position,
 )
+from omega_ib.broker.pacing import RateLimiter
 
 logger = logging.getLogger(__name__)
 
 _ACCOUNT_TAGS = {"NetLiquidation", "TotalCashValue", "BuyingPower", "UnrealizedPnL", "RealizedPnL"}
+
+# IB error codes indicating a market-data subscription/entitlement problem rather
+# than a hard connection failure -- these degrade data quality but shouldn't be
+# treated as fatal (see market_data_degraded below).
+MARKET_DATA_ERROR_CODES = frozenset({354, 2103, 2105, 2157, 10167, 10168})
 
 
 def _to_ib_contract(contract: Contract) -> IBContract:
@@ -131,6 +137,8 @@ class IBBroker(BrokerBase):
         self._host = host
         self._port = port
         self._client_id = client_id
+        self._pacer = RateLimiter(max_calls=40, per_seconds=1.0)
+        self.market_data_degraded = False
         self.ib.disconnectedEvent += self._on_disconnected
         self.ib.errorEvent += self._on_error
 
@@ -138,6 +146,10 @@ class IBBroker(BrokerBase):
         logger.warning("IB Gateway disconnected")
 
     def _on_error(self, reqId: int, errorCode: int, errorString: str, contract) -> None:
+        if errorCode in MARKET_DATA_ERROR_CODES:
+            self.market_data_degraded = True
+            logger.warning("market data subscription issue (code %s, reqId=%s): %s", errorCode, reqId, errorString)
+            return
         logger.error("IB error %s (reqId=%s): %s", errorCode, reqId, errorString)
 
     def connect(self) -> None:
@@ -172,6 +184,7 @@ class IBBroker(BrokerBase):
             return False
 
     def qualify_contract(self, contract: Contract) -> Contract:
+        self._pacer.acquire()
         ib_contract = _to_ib_contract(contract)
         qualified = self.ib.qualifyContracts(ib_contract)
         if not qualified:
@@ -180,6 +193,7 @@ class IBBroker(BrokerBase):
         return contract
 
     def place_order(self, order: OrderRequest) -> OrderStatus:
+        self._pacer.acquire()
         ib_contract = _to_ib_contract(order.contract)
         ib_order = _to_ib_order(order)
         trade = self.ib.placeOrder(ib_contract, ib_order)
@@ -187,19 +201,24 @@ class IBBroker(BrokerBase):
         return _trade_to_status(trade)
 
     def cancel_order(self, order_id: str) -> None:
+        self._pacer.acquire()
         for trade in self.ib.openTrades():
             if str(trade.order.orderId) == str(order_id):
                 self.ib.cancelOrder(trade.order)
                 return
 
     def cancel_all(self) -> None:
+        self._pacer.acquire()
         self.ib.reqGlobalCancel()
 
     def positions(self) -> list[Position]:
+        self._pacer.acquire()
         return [_portfolio_item_to_position(item) for item in self.ib.portfolio()]
 
     def account_summary(self) -> AccountSummary:
+        self._pacer.acquire()
         return _parse_account_summary(self.ib.accountSummary())
 
     def open_orders(self) -> list[OrderStatus]:
+        self._pacer.acquire()
         return [_trade_to_status(t) for t in self.ib.openTrades()]

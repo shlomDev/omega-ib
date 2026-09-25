@@ -1,3 +1,5 @@
+ALL PHASES COMPLETE
+
 # Progress
 
 ## Done
@@ -251,26 +253,109 @@
     grouping, and `format_stats_report` (empty and populated). 199 tests total
     green, ruff clean.
 
+- Phase 9: docker-compose + systemd + deploy doc + hardening
+  - `omega_ib/main.py` and `omega_ib/scheduler.py` were built now because
+    docker-compose/systemd need a real process entrypoint to run --
+    `scheduler.py`'s `build_scheduler` wires pre-market (08:30 ET)/mid-session
+    (12:30)/EOD (15:40) jobs behind `is_trading_day` (NYSE calendar via
+    `pandas_market_calendars`), the weekend/holiday hardening item. `main.py`'s
+    `build_broker` tries a real `IBBroker` connection and falls back to
+    `FakeBroker` (logged, not fatal) if unreachable; `run_pre_market_plan` runs
+    the full strategies -> (optional AI review) -> `fixed_fractional_size` ->
+    bracket-order pipeline against whatever `MarketDataProvider` is wired up,
+    and `run_eod_management` runs `lifecycle/eod.py`'s rules against live
+    positions and flattens what they flag. Both are real, tested code paths,
+    not stubs -- verified with synthetic bars/positions in `tests/test_main.py`.
+  - Found and fixed two real bugs while building and testing this integration:
+    1. **`FakeBroker` filled every leg of a bracket order immediately**
+       (entry + stop + target all at once), netting out to a nonsensical
+       position, because it had no concept of a contingent child order.
+       Fixed: orders with `parent_id` set (bracket children) now stay
+       `"submitted"` until `set_price` crosses their trigger, at which point
+       they fill and their OCA sibling is cancelled -- exercised in
+       `tests/test_fake_broker_brackets.py`. This only changes behavior for
+       orders with `parent_id` set (bracket children); no other order path in
+       the codebase sets it, and the full test suite from every prior phase
+       was re-run after the change and stayed green.
+    2. **`run_pre_market_plan` placed one bracket order per *signal*, not per
+       *symbol*** -- when multiple strategies fired on the same symbol (common,
+       since e.g. a breakout day can also read as a held gap), it opened
+       redundant/conflicting positions. Fixed by keeping only the highest-
+       ranked signal per symbol before sizing/placing.
+  - `omega_ib/broker/pacing.py`: `RateLimiter` (sliding-window, default 40
+    calls/sec), wired into every `IBBroker` method that calls into `ib_async`
+    (qualify/place/cancel/positions/account_summary/open_orders) -- the IB API
+    rate-limit pacing hardening item.
+  - `omega_ib/broker/ib.py`'s `_on_error` now recognizes market-data-
+    subscription error codes (354, 2103, 2105, 2157, 10167, 10168) and sets
+    `market_data_degraded = True` instead of logging them as fatal errors --
+    the market-data subscription error handling item.
+  - Daily Gateway restart is delegated to IBC inside the `ib-gateway` container
+    (`AUTO_RESTART_TIME` env var) rather than reimplemented in this app, since
+    IBC already owns the Gateway's login/restart lifecycle -- documented in
+    `DEPLOY.md`.
+  - `Dockerfile` + `docker-compose.yml` (gateway + app, `env_file: .env`).
+    Actually built and ran end-to-end in this sandbox (`docker build`, full
+    `pytest` run inside a fresh `python:3.11-slim` container with freshly
+    resolved deps including pandas 3.0.6 -- still 223 green), then smoke-tested
+    the app image standalone with `docker run` (falls back to `FakeBroker`,
+    scheduler starts all three jobs, `/api/health` and `/api/account` respond
+    over real HTTP). Found and fixed a real bug this way: `.env.example`'s
+    `IB_PORT=4002` combined with the app service's `${IB_PORT:-4004}` meant the
+    fallback default never applied (the var *was* set, just to the wrong
+    value), so the app would have tried to reach the gateway on the wrong port
+    out of the box. Fixed by defaulting `.env.example`'s `IB_PORT` to 4004 (the
+    gnzsnz/ib-gateway paper port, matching the primary documented path) and by
+    decoupling the gateway healthcheck from `IB_PORT` entirely (it now checks
+    both the live and paper ports directly rather than trusting a variable
+    shared with the app service).
+  - `deploy/omega-ib.service`: systemd unit for a non-Docker run (own venv,
+    `ProtectSystem=strict`, only `data/` writable, restart-on-failure).
+  - `DEPLOY.md`: both deploy paths, why each hardening item exists, secrets
+    reference. `README.md` updated with a safety summary and a "run locally
+    against the fake broker" quickstart.
+  - Tests: `tests/test_scheduler.py`, `tests/test_broker_pacing.py`,
+    `tests/test_ib_broker_pacing_and_errors.py`, `tests/test_fake_broker_brackets.py`,
+    `tests/test_main.py`. 223 tests total green, ruff clean -- verified both in
+    this sandbox's Python env and inside a fresh Docker container.
+
 ## In progress
-- (none)
+- (none) -- all 9 build phases from CLAUDE.md are complete.
 
-## Blocked
-- No IB Gateway reachable in this dev/CI sandbox (carried over from Phase 2). All
-  strategy/execution/EOD/options logic is broker-agnostic and fully tested against
-  `FakeBroker`/`FakeMarketData`/`FakeOptionsData`; `IBMarketData` and `IBOptionsData`'s
-  live calls are untested end-to-end until run against a reachable Gateway.
-- No real Anthropic API key/network available here either; `ai/reviewer.py` is
-  fully unit tested against an injected fake client. A live smoke test against
-  the real API is pending until run somewhere with `ANTHROPIC_API_KEY` set.
-- No browser/GUI available to visually test `web/static/index.html` (carried over
-  from Phase 4).
-- `backtest/replay.py` has not been run against real historical market data (no
-  data feed available here) -- only synthetic bars in tests. Running it against
-  real history is pending until done on a host with a market data source.
+## Blocked / pending live verification
+- No IB Gateway reachable in this dev/CI sandbox. Every broker-facing pure
+  helper (contract/order conversion, account/position parsing, reconnect/
+  heartbeat control flow, rate limiting, error-code handling) is unit tested
+  against `ib_async` objects or mocks with no network; all strategy/execution/
+  EOD/options/scheduler logic is exercised end-to-end against `FakeBroker`/
+  `FakeMarketData`/`FakeOptionsData`. What remains untested is the real
+  network path itself: `IBBroker.connect()`/`reconnect_with_backoff()` against
+  an actual Gateway, `IBMarketData`/`IBOptionsData`'s live chain/bar/scanner
+  calls, and the `ib-gateway` container's IBC login flow (2FA, paper account
+  credentials). Run `python -m omega_ib.tools.check_connection` and
+  `docker compose up` against a real paper account to close this out.
+- No real `ANTHROPIC_API_KEY` available here; `ai/reviewer.py` is fully unit
+  tested against an injected fake client (including the schema-validation and
+  size-multiplier-loosening rejection paths). A live smoke test against the
+  real Anthropic API is pending until run somewhere with a key configured.
+- No browser available to visually test `web/static/index.html`; verified via
+  real `uvicorn`/Docker HTTP smoke tests instead (index HTML, account,
+  risk/limits, WS stream). A real click-through in a browser is still pending.
+- `backtest/replay.py` has only been run against synthetic bars in tests --
+  running it against real historical data is pending a market data source.
 
-## Next
-- Phase 9: `docker-compose.yml` (gateway + app, reads `.env`), a `systemd` unit
-  for non-Docker runs, a deploy doc, and hardening (IB API rate-limit pacing,
-  market-data subscription error handling, weekend/holiday handling, daily
-  gateway restart). This is the last phase -- once its tests are green, mark
-  PROGRESS.md's first line `ALL PHASES COMPLETE`.
+## Next (beyond the 9 build phases -- follow-up integration work)
+- Wire `run_pre_market_plan`'s universe to a real scanner
+  (`data/market.py`'s `universe_from_scans`) instead of the static
+  `DEFAULT_UNIVERSE` list in `main.py`.
+- Wire options scanning/strategy selection into the scheduler (currently only
+  the equity pipeline is scheduled; `options_builder.py`/`strategies/options/*`
+  are fully built and tested but not yet called from `main.py`).
+- Intraday trailing-stop management needs an order-modify capability that
+  `BrokerBase` doesn't have yet (`place_order`/`cancel_order` only) --
+  `scheduler.py`'s `intraday_job` hook exists but nothing is wired to it.
+- Track `trades_today` from `store.models.Trade` for `run_eod_management`'s AI
+  review call (currently passed as an empty list).
+- Run everything once against a real IB Gateway paper account end-to-end
+  (connection, a real scan, a real paper order, a real fill) to close out the
+  "Blocked / pending live verification" items above.

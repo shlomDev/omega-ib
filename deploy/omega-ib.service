@@ -1,0 +1,22 @@
+[Unit]
+Description=OMEGA-IB autonomous trading terminal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=omega
+Group=omega
+WorkingDirectory=/opt/omega-ib
+EnvironmentFile=/opt/omega-ib/.env
+ExecStart=/opt/omega-ib/.venv/bin/python -m omega_ib.main
+Restart=on-failure
+RestartSec=5
+# Hardening: the service never needs to write outside its own data dir.
+ProtectSystem=strict
+ReadWritePaths=/opt/omega-ib/data
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

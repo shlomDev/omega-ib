@@ -1,0 +1,55 @@
+services:
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TWS_USERID: ${TWS_USERID}
+      TWS_PASSWORD: ${TWS_PASSWORD}
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      READ_ONLY_API: ${IB_READ_ONLY_API:-no}
+      # Daily restart keeps the Gateway from accumulating memory/connection cruft;
+      # IBC picks a quiet time to bounce it rather than mid-session.
+      AUTO_RESTART_TIME: ${IB_AUTO_RESTART_TIME:-11:59 PM}
+      TWO_FA_TIMEOUT_ACTION: restart
+      TZ: ${TZ:-America/New_York}
+    ports:
+      # Bind to localhost only -- the app container reaches this by service
+      # name on the compose network; these host bindings are just for
+      # debugging (e.g. attaching the noVNC console) and never need exposing
+      # beyond the VM itself.
+      - "127.0.0.1:4003:4003" # live API port
+      - "127.0.0.1:4004:4004" # paper API port
+    volumes:
+      - ib-gateway-data:/home/ibgateway
+    healthcheck:
+      # Checks both the live (4003) and paper (4004) API ports rather than
+      # trusting the app service's IB_PORT value -- keeps the healthcheck
+      # correct regardless of TRADING_MODE without the two services' port
+      # config needing to agree with each other.
+      test: ["CMD-SHELL", "(echo > /dev/tcp/127.0.0.1/4003) 2>/dev/null || (echo > /dev/tcp/127.0.0.1/4004) 2>/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      ib-gateway:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      IB_HOST: ib-gateway
+      IB_PORT: ${IB_PORT:-4004}
+      DATABASE_URL: sqlite:////app/data/omega.db
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+
+volumes:
+  ib-gateway-data:
