@@ -224,6 +224,33 @@
     `apply_reviews_to_signals`'s veto/tighten/approve/unreviewed cases, and all
     three prompt builders/wrappers. 190 tests total green, ruff clean.
 
+- Phase 8: backtest/replay harness + per-strategy stats report
+  - `backtest/replay.py`: `replay(bars_by_symbol, strategies, ...)` drives
+    `FakeBroker` + `RiskGuard` day-by-day through a dict of per-symbol OHLCV
+    DataFrames -- same `strategies -> fixed_fractional_size -> guard.place_order`
+    path used live. Explicitly *not* a fill-realism engine (no slippage/partial
+    fills/intrabar priority): entries fill at the signal's `entry_price`; each
+    open trade is checked against every subsequent bar's low/high and exits at
+    stop or target, whichever the bar reaches first (stop checked first, the
+    conservative assumption). Every entry/exit still goes through
+    `guard.place_order`, so a `GuardRejection` (kill switch, position caps,
+    daily loss cap, etc.) is recorded in `ReplayResult.rejections` instead of
+    silently skipped -- the whole point is exercising the guard against
+    history, not just the strategies.
+  - `compute_strategy_stats` (per-strategy trade count, win rate, total/avg
+    P&L, avg R-multiple via `ClosedTrade.r_multiple`), `max_drawdown` (peak-to-
+    trough NAV decline from the run's equity curve), `format_stats_report`
+    (human-readable text report combining both, for future CLI/Telegram use).
+  - Verified by hand-running three scenarios before writing assertions: a
+    momentum-breakout entry that exits at target (profit, R=+2.0), the same
+    setup exiting at stop instead (loss, R=-1.0), and a two-symbol run with
+    `max_open_positions=1` that produces a real `GuardRejection` message in
+    `result.rejections` for the second symbol.
+  - Tests: `tests/test_backtest_replay.py` -- target exit, stop exit, no-setup
+    no-op, guard-rejection recording, `max_drawdown`, `compute_strategy_stats`
+    grouping, and `format_stats_report` (empty and populated). 199 tests total
+    green, ruff clean.
+
 ## In progress
 - (none)
 
@@ -237,8 +264,13 @@
   the real API is pending until run somewhere with `ANTHROPIC_API_KEY` set.
 - No browser/GUI available to visually test `web/static/index.html` (carried over
   from Phase 4).
+- `backtest/replay.py` has not been run against real historical market data (no
+  data feed available here) -- only synthetic bars in tests. Running it against
+  real history is pending until done on a host with a market data source.
 
 ## Next
-- Phase 8: `backtest/replay.py` -- replay historical bars through
-  `strategies/equity/*` + `risk/guard.py` using `FakeBroker`, produce a
-  per-strategy stats report (win rate, avg R, max drawdown, etc.).
+- Phase 9: `docker-compose.yml` (gateway + app, reads `.env`), a `systemd` unit
+  for non-Docker runs, a deploy doc, and hardening (IB API rate-limit pacing,
+  market-data subscription error handling, weekend/holiday handling, daily
+  gateway restart). This is the last phase -- once its tests are green, mark
+  PROGRESS.md's first line `ALL PHASES COMPLETE`.
