@@ -188,6 +188,42 @@
     `test_options_builder.py`, `test_options_management.py`,
     `test_options_integration.py`. 172 tests green, ruff clean.
 
+- Phase 7: AI reviewer with schema validation + fallback
+  - `omega_ib/ai/reviewer.py`: `AIReviewer.review(kind, prompt, symbols)` calls
+    the Anthropic API with a forced tool call (`tool_choice={"type": "tool",
+    "name": "trading_review"}`) against `TOOL_SCHEMA`, so the model's reply is
+    always structured JSON, then validates it into a pydantic `ReviewResponse`/
+    `SignalReview`. Advisory-only is structurally enforced, not just documented:
+    `SignalReview.size_multiplier` is constrained to `[0.0, 1.0]` by both the
+    JSON schema sent to the model *and* a pydantic field constraint on the way
+    back (verified in `test_review_falls_back_when_size_multiplier_exceeds_one`
+    and `test_signal_review_rejects_multiplier_above_one_directly` -- a model
+    reply trying to size up above 1.0 fails validation and is treated the same
+    as an API failure). There is no field anywhere in the schema through which
+    the AI could raise a limit, size up, or touch the broker/guard directly.
+  - Any failure mode -- no API key, network/API error, or a response that
+    fails schema validation -- is caught and converted to a fallback
+    `ReviewResponse` (`action="approve", size_multiplier=1.0` for every symbol)
+    so the rule-based pipeline keeps running exactly as if the AI were absent.
+    Every call (success or fallback) writes an audit-log row
+    (`ai_review`/`ai_review_fallback`) and one `AIDecision` row per symbol
+    (CLAUDE.md rule 7).
+  - Three prompt builders (`build_pre_market_prompt`/`build_mid_session_prompt`/
+    `build_eod_prompt`) and matching wrapper methods
+    (`pre_market_plan`/`mid_session_review`/`eod_review`) on `AIReviewer`, each
+    telling the model explicitly that it cannot increase size or override a
+    risk limit. `apply_reviews_to_signals(signals, reviews)` is the integration
+    helper for a future scheduler: vetoed signals are dropped, "tighten" applies
+    `size_multiplier`, "approve" always uses full size regardless of what
+    multiplier the model attached, and any signal the AI didn't opine on passes
+    through unchanged (advisory, not gating).
+  - Tests mock the Anthropic client via dependency injection (`AIReviewer(...,
+    client=...)`) -- no network calls in CI. `tests/test_ai_reviewer.py`
+    covers the success path, API-error fallback, missing-API-key fallback,
+    schema-validation-failure fallback, the size_multiplier-loosening rejection,
+    `apply_reviews_to_signals`'s veto/tighten/approve/unreviewed cases, and all
+    three prompt builders/wrappers. 190 tests total green, ruff clean.
+
 ## In progress
 - (none)
 
@@ -196,12 +232,13 @@
   strategy/execution/EOD/options logic is broker-agnostic and fully tested against
   `FakeBroker`/`FakeMarketData`/`FakeOptionsData`; `IBMarketData` and `IBOptionsData`'s
   live calls are untested end-to-end until run against a reachable Gateway.
+- No real Anthropic API key/network available here either; `ai/reviewer.py` is
+  fully unit tested against an injected fake client. A live smoke test against
+  the real API is pending until run somewhere with `ANTHROPIC_API_KEY` set.
 - No browser/GUI available to visually test `web/static/index.html` (carried over
   from Phase 4).
 
 ## Next
-- Phase 7: `ai/reviewer.py` -- Claude pre-market plan, mid-session review, EOD
-  review; strict JSON schema output; fallback to rule-based operation when the
-  API fails (system keeps running without AI). The AI layer stays strictly
-  advisory per CLAUDE.md rule 5: propose/veto/tighten only, never loosen a limit
-  or call the broker/guard directly.
+- Phase 8: `backtest/replay.py` -- replay historical bars through
+  `strategies/equity/*` + `risk/guard.py` using `FakeBroker`, produce a
+  per-strategy stats report (win rate, avg R, max drawdown, etc.).

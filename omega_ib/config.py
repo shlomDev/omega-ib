@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     tws_userid: str = ""
     tws_password: str = ""
 
-    # --- AI layer ---
+    # --- AI layer (advisory only -- see ai/reviewer.py) ---
     anthropic_api_key: str = ""
+    ai_model: str = "claude-sonnet-5"
 
     # --- Telegram ---
     telegram_bot_token: str = ""
