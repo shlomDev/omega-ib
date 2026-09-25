@@ -37,16 +37,36 @@
     `tests/test_ib_broker_reconnect.py` (reconnect backoff + heartbeat via mocked `IB`).
   - `ruff check .` and `pytest -q` both green (25 passed).
 
+- Phase 3: risk guard + kill switch + audit log
+  - `omega_ib/risk/guard.py`: `RiskGuard` is the only sanctioned caller of
+    `broker.place_order` (enforced by `tests/test_guard_enforcement.py`, which greps
+    all of `omega_ib/` for `.place_order(` calls outside this one file). Every hard
+    limit from CLAUDE.md rule 4 is a separate check: kill switch, read-only trading
+    mode (live requires TRADING_MODE=live AND LIVE_CONFIRM=I_ACCEPT_REAL_MONEY_RISK),
+    no market orders on options, no naked short calls (single-leg OPT SELL C checked
+    against held shares; BAG legs checked so short calls can't exceed matching long
+    calls in the structure), max options contracts/order, max order notional, max
+    position % NAV, max open positions (only for genuinely new symbols), max daily
+    loss % NAV, and a PDT day-trade check for sub-$25k NAV accounts. Every rejection
+    and every placed order writes to the audit log with a reason (rule 7).
+  - Kill switch: `engage_kill_switch()` touches the `KILL` file and calls
+    `broker.cancel_all()`; `reset_kill_switch()` removes the file. `kill_switch_active`
+    also honors the file existing already (so `touch KILL` from the CLI/Telegram/UI works).
+  - Sizing helpers also live here per the CLAUDE.md layout comment:
+    `fixed_fractional_size` (risk % of NAV per stop distance, capped by
+    max_order_notional/max_position_pct_nav so a sizing bug can't itself breach a
+    limit), `atr_stop_price`, `size_by_fixed_fractional_atr`.
+  - Tests: `tests/test_guard_enforcement.py` (grep enforcement), `tests/test_risk_guard.py`
+    (every limit, kill switch engage/reset, live-mode gating, sizing helpers) — 50 passed.
+
 ## In progress
 - (none)
 
 ## Blocked
-- No IB Gateway reachable in this dev/CI sandbox. `check_connection.py` and the real
-  `IBBroker.connect()` path are untested end-to-end here; the pure logic (contract/order
-  building, account/position parsing, reconnect/heartbeat control flow) is fully unit
-  tested with mocks. True live-integration check against a running IB Gateway paper
-  account is pending until run on the VM.
+- No IB Gateway reachable in this dev/CI sandbox (carried over from Phase 2). All guard
+  and sizing logic is broker-agnostic and fully tested against `FakeBroker`.
 
 ## Next
-- Phase 3: `risk/guard.py` (pre-trade checks, sizing, exposure, PDT, kill switch),
-  grep-based test enforcing only guard calls `broker.place_order`.
+- Phase 4: `web/app.py` (FastAPI REST + WS), `web/static/index.html` (dark terminal UI),
+  `risk/portfolio.py` (aggregate greeks/beta-weighted delta/sector concentration/VaR),
+  `notify/telegram.py` (alerts + /status /pnl /positions /risk /scan /opts /kill /resume).
