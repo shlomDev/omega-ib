@@ -1,0 +1,46 @@
+name: Deploy to Oracle VM
+on: workflow_dispatch
+concurrency: deploy
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH key
+        run: |
+          mkdir -p ~/.ssh && echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          printf 'Host *\n  IdentityFile ~/.ssh/id\n  StrictHostKeyChecking accept-new\n' > ~/.ssh/config
+      - name: Prepare VM
+        run: |
+          ssh "$VM" 'bash -s' <<'R'
+          set -e
+          command -v docker >/dev/null || { curl -fsSL https://get.docker.com | sudo sh; sudo usermod -aG docker "$USER"; }
+          mkdir -p ~/omega-ib
+          R
+      - name: Write .env on VM if missing (paper only)
+        run: |
+          ssh "$VM" 'test -f ~/omega-ib/.env' && exit 0
+          WEB=$(head -c 24 /dev/urandom | base64 | tr -dc A-Za-z0-9)
+          ssh "$VM" 'umask 077; cat > ~/omega-ib/.env' <<E
+          TRADING_MODE=paper
+          IB_HOST=ib-gateway
+          IB_PORT=4004
+          IB_CLIENT_ID=17
+          TWS_USERID=${{ secrets.TWS_USERID }}
+          TWS_PASSWORD=${{ secrets.TWS_PASSWORD }}
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          WEB_AUTH_TOKEN=$WEB
+          E
+      - name: Ship + start
+        run: |
+          rsync -az --delete --exclude .git --exclude .env --exclude data/ ./ "$VM:~/omega-ib/"
+          ssh "$VM" 'cd ~/omega-ib && sudo docker compose up -d --build && sudo docker compose ps'
+      - name: Notify
+        if: always()
+        run: |
+          [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] && curl -s -m 10 "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data-urlencode text="🚀 OMEGA-IB deploy: ${{ job.status }}" >/dev/null || true

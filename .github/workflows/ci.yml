@@ -1,0 +1,16 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Test
+        run: |
+          if [ ! -f pyproject.toml ]; then echo "No code yet"; exit 0; fi
+          pip install -q -e ".[dev]"
+          ruff check .
+          pytest -q
