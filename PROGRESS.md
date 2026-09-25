@@ -89,16 +89,69 @@
   - Tests: `tests/test_portfolio_risk.py`, `tests/test_web_app.py` (FastAPI
     TestClient incl. WS auth + streaming), `tests/test_telegram.py`. 82 passed, ruff clean.
 
+- Phase 5: equity strategies + scanner + execution + EOD
+  - `omega_ib/strategies/equity/base.py`: `Strategy` ABC (`generate(symbol, bars) ->
+    Signal | None`), `Signal` dataclass, `run_strategies`/`rank_signals` (highest
+    score first). `indicators.py`: pure-pandas `sma`/`atr`/`vwap`/`rolling_high`/
+    `rolling_low`/`zscore` shared by all five strategies.
+  - Five pluggable strategies, each returning `None` when no setup or a `Signal`
+    with entry/stop/target computed via `risk.guard.atr_stop_price`:
+    `momentum_breakout.py` (close breaks prior N-day high on above-average volume),
+    `gap_and_go.py` (morning gap holds above its own open), `mean_reversion.py`
+    (oversold z-score bounce with a reversal candle), `vwap_reclaim.py` (price
+    dips below VWAP then reclaims it), `trend_pullback.py` (pullback to 20d SMA
+    within an uptrend defined by the 50d SMA, then bounces). Registered in
+    `strategies/equity/__init__.py` as `ALL_STRATEGIES`.
+  - `omega_ib/data/market.py`: `MarketDataProvider` ABC, `FakeMarketData`
+    (in-memory bars/scan results for tests/dry-run), `IBMarketData` (wraps
+    `ib_async` `reqHistoricalData`/`reqScannerData`; pure `_bars_to_dataframe`
+    helper unit tested without network), `StaticEarningsCalendar` (dict-backed;
+    swappable for a real feed later), `universe_from_scans` (de-duped union
+    across multiple scanner subscriptions).
+  - `omega_ib/execution/engine.py`: `build_bracket_order`/`place_bracket_order`
+    (entry LMT + STP loss + LMT target, OCA-linked via `parent_id` once the entry
+    is placed), `submit_with_price_walk` (cancel+resubmit a limit order up to
+    `max_steps` times, walking price toward the market -- reusable for options
+    combo orders once options_builder.py exists), `FillTracker` (idempotent
+    fill ledger keyed by order_id, writes to the audit log). Every order placement
+    goes through `guard.place_order(...)`, never the broker directly -- verified
+    by the same grep-based enforcement test from Phase 3 (had to correct that
+    test's pattern to `broker.place_order(` specifically, since it was originally
+    over-broad and would have flagged the sanctioned `guard.place_order(...)` calls
+    made from this module).
+  - `omega_ib/lifecycle/eod.py`: equity-side EOD rules -- `leveraged_etf_flatten_decision`
+    (never hold leveraged/inverse ETFs overnight), `earnings_proximity_decision`
+    (flatten within N days of an earnings print), `overnight_hold_decision`
+    (flatten a same-day entry already beyond a max intraday loss threshold),
+    combined in `eod_decisions_for_position`. Options 21-DTE/50%-profit management
+    is deferred to alongside phase 6 (needs options positions to exist first).
+  - Tests: `tests/test_equity_indicators.py`, `tests/test_equity_strategies.py`
+    (exact synthetic-bar fixtures verified against each strategy's real output
+    before being written into assertions), `tests/test_market_data.py`,
+    `tests/test_execution_engine.py` (incl. a scripted broker stub to exercise
+    the price-walk retry loop, since `FakeBroker` always fills immediately),
+    `tests/test_lifecycle_eod.py`. 125 tests green, ruff clean.
+
+- Fixed a real bug found while staging this phase: `.gitignore`'s unanchored `data/`
+  rule matched *any* directory named `data`, so `omega_ib/data/` (this phase's new
+  package) was silently excluded from git entirely. Changed to `/data/` so only the
+  repo-root sqlite/data directory is ignored. Verified `git ls-files` now includes
+  `omega_ib/data/__init__.py` and `omega_ib/data/market.py`.
+
 ## In progress
 - (none)
 
 ## Blocked
-- No IB Gateway reachable in this dev/CI sandbox (carried over from Phase 2). All guard,
-  portfolio, and web logic is broker-agnostic and fully tested against `FakeBroker`.
-- No browser/GUI available to visually test `web/static/index.html`; verified via a real
-  uvicorn server + curl smoke test instead (index HTML, account, risk/limits endpoints).
+- No IB Gateway reachable in this dev/CI sandbox (carried over from Phase 2). All
+  strategy/execution/EOD logic is broker-agnostic and fully tested against
+  `FakeBroker`/`FakeMarketData`; `IBMarketData`'s live scan/historical-data calls
+  are untested end-to-end until run against a reachable Gateway.
+- No browser/GUI available to visually test `web/static/index.html` (carried over
+  from Phase 4).
 
 ## Next
-- Phase 5: `strategies/equity/*` (momentum breakout, gap-and-go, mean reversion, VWAP
-  reclaim, trend pullback), `data/market.py` (bars/snapshots/scanners/earnings calendar),
-  `execution/engine.py`, `lifecycle/eod.py` -- built and tested against `FakeBroker`.
+- Phase 6: `data/options.py` (chains, greeks, IV rank/percentile, liquidity filters),
+  `strategies/options/*` (CSP, covered call, bull put, bear call, iron condor,
+  calendar, long call/put debit spread), `options_builder.py` (combo/BAG orders,
+  max P/L, breakevens, POP, EV, greeks, payoff curve) -- combo orders placed on
+  paper via the same `execution/engine.py`/`risk/guard.py` path.
