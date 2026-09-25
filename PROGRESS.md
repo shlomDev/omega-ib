@@ -138,20 +138,70 @@
   repo-root sqlite/data directory is ignored. Verified `git ls-files` now includes
   `omega_ib/data/__init__.py` and `omega_ib/data/market.py`.
 
+- Phase 6: options data, strategy builder, scanner, combo orders
+  - `omega_ib/data/options.py`: `OptionQuote` (mid/spread_pct), `is_liquid`
+    (spread% + open-interest filter, CLAUDE.md's "reject illiquid: bid-ask > X%
+    of mid"), `OptionChain` (expiries/by_expiry/find/liquid_quotes), `iv_rank`/
+    `iv_percentile`, `OptionsDataProvider` ABC with `FakeOptionsData` (in-memory,
+    for tests/dry-run) and `IBOptionsData` (wraps ib_async's
+    reqSecDefOptParams/reqTickers/modelGreeks -- untested end-to-end, no Gateway
+    here; no IV-history feed wired up yet so `iv_history` returns `[]`).
+  - `omega_ib/strategies/options/base.py`: `OptionsStrategy` ABC
+    (`generate(chain, expiry) -> OptionStructure | None`), `OptionLeg`/
+    `OptionStructure`, `nearest_by_delta` (liquid-quote delta-nearest selection,
+    shared by every strategy below). Seven strategy files covering all eight
+    types from CLAUDE.md feature B: `cash_secured_put.py`, `covered_call.py`
+    (single short leg each -- risk/guard.py's covered-call check verifies
+    shares/coverage independently), `bull_put_spread.py`/`bear_call_spread.py`
+    (short + protective long leg, same expiry), `iron_condor.py` (composes the
+    two credit spreads), `calendar_spread.py` (short near-term + long next-expiry,
+    same strike/right), `debit_spreads.py` (`LongCallDebitSpread`/
+    `LongPutDebitSpread`, long near-ATM + short further-OTM). Registered as
+    `ALL_OPTIONS_STRATEGIES` in `strategies/options/__init__.py`.
+  - `omega_ib/options_builder.py`: `build_combo_order` (structure -> BAG
+    `Contract` + `OrderRequest`, action/limit_price derived from `net_price`'s
+    sign convention: negative = credit, positive = debit), `net_greeks`,
+    `payoff_at_expiration`/`payoff_curve` (for the UI payoff chart),
+    `probability_of_profit` (retail delta-proxy heuristic: `1 - avg(|short
+    delta|)` for credit structures, `avg(|long delta|)` for debit), `EV`,
+    `return_on_risk`, `is_liquid_structure`, `score_structure`/`rank_structures`
+    (EV + POP + theta + capped ROR, illiquid structures filtered out before
+    scoring). Found and fixed a duplicate-breakeven bug in the sign-change scan
+    while verifying against a synthetic chain (see `payoff_curve`/`summarize_payoff`
+    zip logic: switched to a strict `pnl1 * pnl2 < 0` sign-change test).
+  - `omega_ib/lifecycle/eod.py` gained `days_to_expiration` and
+    `options_management_decision`: take-profit at 50% of max credit, stop-loss
+    at 2x credit received (credit structures only -- CLAUDE.md's "2x credit"
+    rule doesn't define an analogous debit-side threshold, so debit structures
+    only get take-profit + the 21-DTE roll check), and exit/roll at 21 DTE.
+  - Combo orders flow through the exact same `execution/engine.py`/
+    `risk/guard.py` path as equities (verified in
+    `tests/test_options_integration.py`): the naked-short-call guard check
+    correctly passes covered spreads (long call caps the short) and blocks
+    single-leg naked calls; `max_options_contracts_per_order` applies to combo
+    quantity too.
+  - Every numeric test fixture (`tests/options_fixtures.py`'s synthetic chain,
+    and each strategy's expected strikes/breakevens/scores) was computed by
+    running the real code first and reading back its actual output, not
+    hand-calculated, to avoid encoding a wrong expectation.
+  - Tests: `test_options_data.py`, `test_options_strategies.py`,
+    `test_options_builder.py`, `test_options_management.py`,
+    `test_options_integration.py`. 172 tests green, ruff clean.
+
 ## In progress
 - (none)
 
 ## Blocked
 - No IB Gateway reachable in this dev/CI sandbox (carried over from Phase 2). All
-  strategy/execution/EOD logic is broker-agnostic and fully tested against
-  `FakeBroker`/`FakeMarketData`; `IBMarketData`'s live scan/historical-data calls
-  are untested end-to-end until run against a reachable Gateway.
+  strategy/execution/EOD/options logic is broker-agnostic and fully tested against
+  `FakeBroker`/`FakeMarketData`/`FakeOptionsData`; `IBMarketData` and `IBOptionsData`'s
+  live calls are untested end-to-end until run against a reachable Gateway.
 - No browser/GUI available to visually test `web/static/index.html` (carried over
   from Phase 4).
 
 ## Next
-- Phase 6: `data/options.py` (chains, greeks, IV rank/percentile, liquidity filters),
-  `strategies/options/*` (CSP, covered call, bull put, bear call, iron condor,
-  calendar, long call/put debit spread), `options_builder.py` (combo/BAG orders,
-  max P/L, breakevens, POP, EV, greeks, payoff curve) -- combo orders placed on
-  paper via the same `execution/engine.py`/`risk/guard.py` path.
+- Phase 7: `ai/reviewer.py` -- Claude pre-market plan, mid-session review, EOD
+  review; strict JSON schema output; fallback to rule-based operation when the
+  API fails (system keeps running without AI). The AI layer stays strictly
+  advisory per CLAUDE.md rule 5: propose/veto/tighten only, never loosen a limit
+  or call the broker/guard directly.
