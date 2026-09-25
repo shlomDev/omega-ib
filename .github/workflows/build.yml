@@ -1,5 +1,7 @@
 name: Autonomous build
 on:
+  schedule:
+    - cron: '17 */5 * * *'
   workflow_dispatch:
     inputs:
       runs_left:
@@ -33,10 +35,9 @@ jobs:
           python-version: "3.11"
       - name: Claude builds
         if: steps.st.outputs.done == 'false'
-        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: |
             --max-turns 250
